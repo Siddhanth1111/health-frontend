@@ -11,7 +11,6 @@ const VideoCallRoom = () => {
   const remoteVideoRef = useRef();
   const peerConnectionRef = useRef();
   const localStreamRef = useRef();
-  const pendingCandidates = useRef([]); // store ICE until remoteDescription is ready
   
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isAudioOn, setIsAudioOn] = useState(true);
@@ -22,21 +21,13 @@ const VideoCallRoom = () => {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   };
 
-  const isCaller = currentCall?.role === 'patient'; // adjust depending on your logic
-
   useEffect(() => {
     if (!socket || !roomId) return;
 
-    if (isCaller) {
-      initializeCall(true); // caller starts immediately
-    }
+    initializeCall();
+    setupSocketListeners();
 
-    socket.on('webrtc-signal', handleWebRTCSignal);
-    socket.on('call-ended', () => {
-      cleanup();
-      navigate('/dashboard');
-    });
-
+    // Call duration timer
     const timer = setInterval(() => {
       setCallDuration(prev => prev + 1);
     }, 1000);
@@ -44,8 +35,6 @@ const VideoCallRoom = () => {
     return () => {
       clearInterval(timer);
       cleanup();
-      socket.off('webrtc-signal', handleWebRTCSignal);
-      socket.off('call-ended');
     };
   }, [socket, roomId]);
 
@@ -55,7 +44,7 @@ const VideoCallRoom = () => {
     return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const initializeCall = async (createOffer = false) => {
+  const initializeCall = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -99,16 +88,14 @@ const VideoCallRoom = () => {
         }
       };
 
-      if (createOffer) {
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        
-        socket.emit('webrtc-signal', {
-          roomId,
-          type: 'offer',
-          signal: offer
-        });
-      }
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      
+      socket.emit('webrtc-signal', {
+        roomId,
+        type: 'offer',
+        signal: offer
+      });
 
     } catch (error) {
       console.error('❌ Error initializing call:', error);
@@ -116,53 +103,38 @@ const VideoCallRoom = () => {
     }
   };
 
-  const handleWebRTCSignal = async ({ type, signal }) => {
-    let pc = peerConnectionRef.current;
+  const setupSocketListeners = () => {
+    socket.on('webrtc-signal', handleWebRTCSignal);
+    socket.on('call-ended', () => {
+      cleanup();
+      navigate('/dashboard');
+    });
+  };
+
+  const handleWebRTCSignal = async (data) => {
+    const { type, signal } = data;
+    const peerConnection = peerConnectionRef.current;
 
     try {
       switch (type) {
         case 'offer':
-          if (!pc) {
-            await initializeCall(false); // callee creates connection only when offer arrives
-            pc = peerConnectionRef.current;
-          }
-          await pc.setRemoteDescription(new RTCSessionDescription(signal));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
+          await peerConnection.setRemoteDescription(signal);
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
           socket.emit('webrtc-signal', {
             roomId,
             type: 'answer',
             signal: answer
           });
-
-          // flush pending ICE candidates
-          pendingCandidates.current.forEach(async c => {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(c));
-            } catch (err) {
-              console.error('❌ Failed to add queued ICE candidate:', err);
-            }
-          });
-          pendingCandidates.current = [];
           break;
 
         case 'answer':
-          if (pc) {
-            await pc.setRemoteDescription(new RTCSessionDescription(signal));
-          }
+          await peerConnection.setRemoteDescription(signal);
           break;
 
         case 'ice-candidate':
-          if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(signal));
-          } else {
-            console.log('⏳ Queuing ICE candidate until remote description is set');
-            pendingCandidates.current.push(signal);
-          }
+          await peerConnection.addIceCandidate(signal);
           break;
-
-        default:
-          console.warn('⚠️ Unknown WebRTC signal type:', type);
       }
     } catch (error) {
       console.error('❌ WebRTC signal error:', error);
@@ -201,7 +173,6 @@ const VideoCallRoom = () => {
     }
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
-      peerConnectionRef.current = null;
     }
   };
 
