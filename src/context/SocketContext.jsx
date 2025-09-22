@@ -33,6 +33,7 @@ export const SocketProvider = ({ children }) => {
   const [currentCall, setCurrentCall] = useState(null);
   const [onlineDoctors, setOnlineDoctors] = useState(new Set());
   const [userType, setUserType] = useState(null);
+  const [isCaller, setIsCaller] = useState(false); // Add this state
 
   const { user } = useUser();
   const { isSignedIn } = useAuth();
@@ -172,6 +173,8 @@ export const SocketProvider = ({ children }) => {
       return;
     }
 
+    setIsCaller(true); // Set caller state here
+
     console.log('📞 Initiating call to doctor:', doctorId);
     socket.emit('initiate-call', {
       targetDoctorId: doctorId,
@@ -181,7 +184,7 @@ export const SocketProvider = ({ children }) => {
 
   const acceptCall = (callId) => {
     if (!socket) return;
-    
+    setIsCaller(false); // The user accepting is NOT the caller
     console.log('✅ Accepting call:', callId);
     socket.emit('respond-to-call', { callId, accepted: true });
   };
@@ -213,6 +216,7 @@ export const SocketProvider = ({ children }) => {
     onlineDoctors,
     userType,
     initiateCall,
+    isCaller, // Pass this down in the context value
     acceptCall,
     rejectCall,
     endCall
