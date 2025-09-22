@@ -133,27 +133,8 @@ const VideoCallRoom = () => {
           break;
 
         case 'ice-candidate':
-  if (!peerConnection) {
-    console.warn('⚠️ PeerConnection not ready for ICE candidate');
-    return;
-  }
-  if (peerConnection.signalingState === 'closed') {
-    console.warn('⚠️ Ignoring ICE candidate: connection closed');
-    return;
-  }
-  if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-    try {
-      await peerConnection.addIceCandidate(signal);
-      console.log('✅ ICE candidate added');
-    } catch (err) {
-      console.error('❌ Error adding ICE candidate:', err);
-    }
-  } else {
-    console.log('⏳ Remote description not set yet, queuing candidate');
-    // Optional: queue candidates until remoteDescription is ready
-  }
-  break;
-
+          await peerConnection.addIceCandidate(signal);
+          break;
       }
     } catch (error) {
       console.error('❌ WebRTC signal error:', error);
