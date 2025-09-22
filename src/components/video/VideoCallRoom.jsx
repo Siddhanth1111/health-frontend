@@ -5,7 +5,7 @@ import { useSocket } from '../../context/SocketContext';
 const VideoCallRoom = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const { socket, endCall, currentCall } = useSocket();
+  const { socket, endCall, currentCall, userType } = useSocket();
   
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
@@ -28,11 +28,9 @@ const VideoCallRoom = () => {
   useEffect(() => {
     if (!socket || !roomId) return;
 
-    // Determine if this user initiated the call
-    const initiator = currentCall && currentCall.participants && 
-                     currentCall.participants.patient && 
-                     socket.id; // You might need to get this from user context
-    setIsInitiator(!!initiator);
+    // Simple fix: patients are always initiators, doctors are always receivers
+    const { userType } = useSocket();
+    setIsInitiator(userType === 'patient');
 
     initializeCall();
     setupSocketListeners();
@@ -107,12 +105,15 @@ const VideoCallRoom = () => {
       // Only the initiator creates the offer
       // Wait a bit for both peers to join the room
       setTimeout(async () => {
+        console.log('🎯 Initiator check:', isInitiator, 'UserType:', userType);
+        
         if (isInitiator) {
           console.log('📤 Creating offer (as initiator)...');
           try {
             const offer = await peerConnection.createOffer();
             await peerConnection.setLocalDescription(offer);
             
+            console.log('📤 Sending offer:', offer);
             socket.emit('webrtc-signal', {
               roomId,
               type: 'offer',
@@ -125,7 +126,7 @@ const VideoCallRoom = () => {
         } else {
           console.log('⏳ Waiting for offer (as receiver)...');
         }
-      }, 1000);
+      }, 1500); // Increased delay
 
     } catch (error) {
       console.error('❌ Error initializing call:', error);
