@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useSocket } from '../context/SocketContext';
+import { useSocket } from '../../context/SocketContext';
 
 const VideoCallRoom = ({ currentCall }) => {
   const { roomId } = useParams();
