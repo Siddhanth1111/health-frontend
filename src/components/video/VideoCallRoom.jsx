@@ -16,13 +16,23 @@ const VideoCallRoom = () => {
   const [isAudioOn, setIsAudioOn] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
+  const [isInitiator, setIsInitiator] = useState(false);
 
   const rtcConfig = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
   };
 
   useEffect(() => {
     if (!socket || !roomId) return;
+
+    // Determine if this user initiated the call
+    const initiator = currentCall && currentCall.participants && 
+                     currentCall.participants.patient && 
+                     socket.id; // You might need to get this from user context
+    setIsInitiator(!!initiator);
 
     initializeCall();
     setupSocketListeners();
@@ -46,6 +56,7 @@ const VideoCallRoom = () => {
 
   const initializeCall = async () => {
     try {
+      console.log('🎥 Getting user media...');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true
@@ -56,23 +67,29 @@ const VideoCallRoom = () => {
         localVideoRef.current.srcObject = stream;
       }
 
+      console.log('🔗 Creating peer connection...');
       const peerConnection = new RTCPeerConnection(rtcConfig);
       peerConnectionRef.current = peerConnection;
 
+      // Add local stream tracks
       stream.getTracks().forEach(track => {
         peerConnection.addTrack(track, stream);
+        console.log('➕ Added track:', track.kind);
       });
 
+      // Handle remote stream
       peerConnection.ontrack = (event) => {
-        console.log('📹 Received remote stream');
-        if (remoteVideoRef.current) {
+        console.log('📹 Received remote stream:', event.streams[0]);
+        if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
           setIsConnected(true);
         }
       };
 
+      // Handle ICE candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
+          console.log('🧊 Sending ICE candidate');
           socket.emit('webrtc-signal', {
             roomId,
             type: 'ice-candidate',
@@ -81,25 +98,38 @@ const VideoCallRoom = () => {
         }
       };
 
+      // Handle connection state changes
       peerConnection.onconnectionstatechange = () => {
-        console.log('Connection state:', peerConnection.connectionState);
-        if (peerConnection.connectionState === 'connected') {
-          setIsConnected(true);
-        }
+        console.log('🔗 Connection state:', peerConnection.connectionState);
+        setIsConnected(peerConnection.connectionState === 'connected');
       };
 
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      
-      socket.emit('webrtc-signal', {
-        roomId,
-        type: 'offer',
-        signal: offer
-      });
+      // Only the initiator creates the offer
+      // Wait a bit for both peers to join the room
+      setTimeout(async () => {
+        if (isInitiator) {
+          console.log('📤 Creating offer (as initiator)...');
+          try {
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            
+            socket.emit('webrtc-signal', {
+              roomId,
+              type: 'offer',
+              signal: offer
+            });
+            console.log('📤 Offer sent');
+          } catch (error) {
+            console.error('❌ Error creating offer:', error);
+          }
+        } else {
+          console.log('⏳ Waiting for offer (as receiver)...');
+        }
+      }, 1000);
 
     } catch (error) {
       console.error('❌ Error initializing call:', error);
-      alert('Could not access camera/microphone');
+      alert('Could not access camera/microphone: ' + error.message);
     }
   };
 
@@ -109,35 +139,59 @@ const VideoCallRoom = () => {
       cleanup();
       navigate('/dashboard');
     });
+
+    return () => {
+      socket.off('webrtc-signal', handleWebRTCSignal);
+      socket.off('call-ended');
+    };
   };
 
   const handleWebRTCSignal = async (data) => {
-    const { type, signal } = data;
+    const { type, signal, from } = data;
     const peerConnection = peerConnectionRef.current;
+
+    console.log('📡 Received WebRTC signal:', type, 'from:', from);
+
+    // Add null check
+    if (!peerConnection) {
+      console.error('❌ Peer connection not initialized');
+      return;
+    }
 
     try {
       switch (type) {
         case 'offer':
-          await peerConnection.setRemoteDescription(signal);
+          console.log('📥 Handling offer...');
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+          
           const answer = await peerConnection.createAnswer();
           await peerConnection.setLocalDescription(answer);
+          
           socket.emit('webrtc-signal', {
             roomId,
             type: 'answer',
             signal: answer
           });
+          console.log('📤 Answer sent');
           break;
 
         case 'answer':
-          await peerConnection.setRemoteDescription(signal);
+          console.log('📥 Handling answer...');
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(signal));
+          console.log('✅ Remote description set');
           break;
 
         case 'ice-candidate':
-          await peerConnection.addIceCandidate(signal);
+          console.log('📥 Adding ICE candidate...');
+          await peerConnection.addIceCandidate(new RTCIceCandidate(signal));
           break;
+
+        default:
+          console.warn('⚠️ Unknown signal type:', type);
       }
     } catch (error) {
       console.error('❌ WebRTC signal error:', error);
+      // Don't alert for every error, just log it
     }
   };
 
@@ -168,11 +222,24 @@ const VideoCallRoom = () => {
   };
 
   const cleanup = () => {
+    console.log('🧹 Cleaning up...');
+    
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
+      localStreamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log('🛑 Stopped track:', track.kind);
+      });
     }
+    
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
+      console.log('🔒 Peer connection closed');
+    }
+
+    // Clean up socket listeners
+    if (socket) {
+      socket.off('webrtc-signal');
+      socket.off('call-ended');
     }
   };
 
@@ -218,6 +285,9 @@ const VideoCallRoom = () => {
               <div className="text-white text-center">
                 <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-white mx-auto mb-4"></div>
                 <p>Connecting to call...</p>
+                <p className="text-sm mt-2">
+                  {isInitiator ? 'Initiating connection...' : 'Waiting for connection...'}
+                </p>
               </div>
             </div>
           )}
